@@ -1,13 +1,13 @@
 import boto3
-import os
+from app.config import config
 
-# Use LocalStack endpoint
+# Use configuration from config module
 s3 = boto3.client(
     "s3",
-    endpoint_url=os.getenv("AWS_ENDPOINT_URL", "http://localstack:4566"),
-    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID", "test"),
-    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY", "test"),
-    region_name=os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+    endpoint_url=config.aws_endpoint_url,
+    aws_access_key_id=config.aws_access_key_id,
+    aws_secret_access_key=config.aws_secret_access_key,
+    region_name=config.aws_default_region
 )
 
 def upload_to_s3(file_path: str, bucket: str, key: str):

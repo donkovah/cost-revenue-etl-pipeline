@@ -1,12 +1,10 @@
 from app.services.etl import extract, transform, load
+from config.config import config
 
 def run_pipeline():
-    csv_path = "path/to/your/downloaded_shipments.csv"
-    bucket = "your-bucket-name"
-
-    df = extract(csv_path)
+    df = extract(config.csv_file_path)
     df_validated = transform(df)
-    load(df_validated, bucket)
+    load(df_validated, config.s3_bucket_name)
     print("ETL pipeline completed successfully!")
 
 if __name__ == "__main__":
