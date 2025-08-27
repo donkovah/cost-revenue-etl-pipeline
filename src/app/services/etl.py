@@ -3,8 +3,10 @@ import pandera as pa
 from pandera import Column, Check
 from pandera.errors import SchemaError
 from infra.adapters.s3_adapter import upload_to_s3
+from domain.shipment import Shipment
 from datetime import datetime
 import logging
+from typing import List
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -17,11 +19,35 @@ def extract(csv_path: str) -> pd.DataFrame:
     logger.info(f"Extracted {len(df)} rows from CSV")
     return df
 
-def transform(df: pd.DataFrame) -> pd.DataFrame:
-    """Transform and validate the data using pandas and pandera"""
-    logger.info("Starting data transformation")
+def create_shipment_objects(df: pd.DataFrame) -> List[Shipment]:
+    """Convert DataFrame rows to Shipment objects"""
+    logger.info("Converting DataFrame to Shipment objects")
+    shipments = []
     
-    # 1. Data Cleaning and Type Conversion
+    for _, row in df.iterrows():
+        try:
+            shipment = Shipment.from_dict(row.to_dict())
+            shipments.append(shipment)
+        except Exception as e:
+            logger.warning(f"Failed to create Shipment from row {row.name}: {e}")
+            continue
+    
+    logger.info(f"Successfully created {len(shipments)} Shipment objects")
+    return shipments
+
+def shipments_to_dataframe(shipments: List[Shipment]) -> pd.DataFrame:
+    """Convert Shipment objects back to DataFrame"""
+    logger.info("Converting Shipment objects to DataFrame")
+    data = [shipment.to_dict() for shipment in shipments]
+    df = pd.DataFrame(data)
+    logger.info(f"Created DataFrame with {len(df)} rows and {len(df.columns)} columns")
+    return df
+
+def transform(df: pd.DataFrame) -> pd.DataFrame:
+    """Transform and validate the data using Shipment domain model and pandera"""
+    logger.info("Starting data transformation using Shipment domain model")
+    
+    # 1. Data Cleaning and Type Conversion (same as before)
     df_transformed = df.copy()
     
     # Clean and convert date columns
@@ -37,19 +63,20 @@ def transform(df: pd.DataFrame) -> pd.DataFrame:
     df_transformed['origin'] = df_transformed['origin'].astype(str).str.strip()
     df_transformed['destination'] = df_transformed['destination'].astype(str).str.strip()
     
-    # 2. Create derived columns
-    df_transformed['profit'] = df_transformed['revenue'] - df_transformed['cost']
-    df_transformed['profit_margin'] = (df_transformed['profit'] / df_transformed['revenue'] * 100).round(2)
-    df_transformed['shipping_duration_days'] = (df_transformed['delivery_date'] - df_transformed['shipping_date']).dt.days
+    # 2. Remove rows with critical missing data early
+    df_clean = df_transformed.dropna(subset=['guid', 'origin', 'destination', 'cost', 'revenue', 'shipping_date', 'delivery_date'])
+    removed_rows = len(df_transformed) - len(df_clean)
+    if removed_rows > 0:
+        logger.warning(f"Removed {removed_rows} rows with missing critical data")
     
-    # Add processing metadata
-    df_transformed['processed_at'] = datetime.now()
-    df_transformed['year'] = df_transformed['shipping_date'].dt.year
-    df_transformed['month'] = df_transformed['shipping_date'].dt.month
-    df_transformed['quarter'] = df_transformed['shipping_date'].dt.quarter
+    # 3. Convert to Shipment objects (this automatically calculates derived fields)
+    shipments = create_shipment_objects(df_clean)
     
-    # 3. Data Validation Schema with Pandera
-    schema = pa.DataFrameSchema({
+    # 4. Convert back to DataFrame with all calculated fields
+    df_with_calculated_fields = shipments_to_dataframe(shipments)
+    
+    # 5. Create schema based on Shipment model structure
+    shipment_schema = pa.DataFrameSchema({
         "guid": Column(str, checks=[
             Check.str_matches(r"[0-9A-F-]{36}"),
             Check.str_length(36)
@@ -102,10 +129,18 @@ def transform(df: pd.DataFrame) -> pd.DataFrame:
         ])
     })
     
-    # 4. Apply validation and handle errors
+    # 6. Apply validation and handle errors
     try:
-        df_validated = schema.validate(df_transformed)
+        df_validated = shipment_schema.validate(df_with_calculated_fields)
         logger.info(f"Data validation passed for {len(df_validated)} rows")
+        
+        # Log some business insights
+        profitable_shipments = sum(1 for shipment in shipments if shipment.is_profitable)
+        high_margin_shipments = sum(1 for shipment in shipments if shipment.is_high_margin)
+        delayed_shipments = sum(1 for shipment in shipments if shipment.is_delayed)
+        
+        logger.info(f"Business metrics: {profitable_shipments} profitable, {high_margin_shipments} high-margin, {delayed_shipments} delayed shipments")
+        
     except SchemaError as e:
         logger.error(f"Schema validation failed: {e}")
         # Log which rows failed validation
@@ -115,15 +150,7 @@ def transform(df: pd.DataFrame) -> pd.DataFrame:
             logger.error(f"First few failures:\n{failure_cases.head()}")
         raise
     
-    # 5. Remove rows with critical missing data
-    initial_count = len(df_validated)
-    df_validated = df_validated.dropna(subset=['guid', 'origin', 'destination', 'cost', 'revenue'])
-    final_count = len(df_validated)
-    
-    if initial_count != final_count:
-        logger.warning(f"Removed {initial_count - final_count} rows with missing critical data")
-    
-    logger.info(f"Transformation completed successfully. Final dataset: {final_count} rows, {len(df_validated.columns)} columns")
+    logger.info(f"Transformation completed successfully using Shipment domain model. Final dataset: {len(df_validated)} rows, {len(df_validated.columns)} columns")
     
     return df_validated
 
